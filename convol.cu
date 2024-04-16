@@ -1,11 +1,7 @@
 
 
-
-
-
-
 int main() {
-    int pixel_w, pixel_h, kernel_dim;
+
 
     std::ifstream file("input.wav");
     if (!file.is_open()) {
