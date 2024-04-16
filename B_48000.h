@@ -14,13 +14,13 @@
  */
 
 /* General type conversion for MATLAB generated C-code  */
-#include "tmwtypes.h"
+//#include "tmwtypes.h"
 /* 
  * Expected path to tmwtypes.h 
  * C:\Program Files\MATLAB\R2022b\extern\include\tmwtypes.h 
  */
-const int BL_48000 = 47;
-const real64_T B_48000[47] = {
+const int BL = 47;
+const float B[47] = {
   -0.004784039470875,-0.0008445600274623,-0.005995017410417,  0.01532470901036,
    0.002540625979976,-0.001495247396832, 0.004631244912294,-0.008415522781061,
    -0.01444585634034,  0.01542483390079,    0.029487031321,-0.008023471201025,

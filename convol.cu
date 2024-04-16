@@ -1,78 +1,75 @@
+#include <stdio.h>
+#include <fstream>
+#include <iostream>
+#include <math.h>
+#include <string>
+#include <stdlib.h>
+#include "B_48000.h"
 
+struct header {
+    unsigned int ChunkID;
+    unsigned int ChunkSize;
+    unsigned int Format;
+    unsigned int Subchunk1ID;
+    unsigned int Subchunk1Size;
+    unsigned short AudioFormat;
+    unsigned short NumChannels;
+    unsigned int SampleRate;
+    unsigned int ByteRate;
+    unsigned short BlockAlign;
+    unsigned short BitsPerSample;
+    unsigned int Subchunk2ID;
+    unsigned int Subchunk2Size;
+};
 
 int main() {
+    infile_name = "input.wav";
+    outfile_name = "output.wav";
 
-
-    std::ifstream file("input.wav");
-    if (!file.is_open()) {
-        printf("Failed to open file\n");
-        return 1;
+    infile = fopen(infile_name.c_str(), "r");   //open both files
+    outfile = fopen(outfile_name.c_str(), "w+");
+    
+    //quit if files cannot be opened
+    if (infile == NULL) {
+      cout << "Error: Could not open input file." << endl;
+      return 1;
+    }
+    if (outfile == NULL) {
+      cout << "Error: Could not open output file." << endl;
+      return 1;
     }
 
-    file >> pixel_w >> pixel_h;
+    //create header struct and fill with data from input file, checking for supported sample rate before continuing
+    struct header my_header;
+    fread(&my_header, sizeof(my_header),1, infile);
 
-    //get the size for the input and output
-    long int grayscale_size = pixel_h*pixel_w;
+    //get number of samples
+    num_samples = my_header.Subchunk2Size/2;
 
     //allocate the area required to store the data
-    uint8_t *input_image_data = (uint8_t *)malloc(grayscale_size);
-    uint8_t *output_image_data = (uint8_t *)malloc(grayscale_size);
+    uint16_t *input_audio_data = (uint16_t *)malloc(num_samples*sizeof(uint16_t));
+    //uint16_t *output_audio_data = (uint16_t *)malloc();
 
     //get data from the file and store it in memory
-    for (int i = 0; i < pixel_h; i++) {
-        for (int j = 0; j < pixel_w; j++) {
-            std::string value_str;
-            file >> value_str;
-            int value = std::stoi(value_str);
-            input_image_data[(i * pixel_w) + j] = static_cast<uint8_t>(value);
-        }
+    uint16_t audio_sample;
+    for (int i = 0; i < num_samples; i++) {
+            fread(&audio_sample, sizeof(audio_sample), 1, infile);
+            input_audio_data[i] = audio_sample;
     }
-
-    std::ifstream file2("input_kernel.txt");
-    if (!file2.is_open()) {
-        printf("Failed to open kernel file\n");
-        return 1;
-    }
-
-    kernel_dim = ((FILTER_RADIUS * 2) + 1);
-
-    //get the size for the kernel
-    int kernel_size = kernel_dim*kernel_dim;
-
-    //allocate the area required to store the data
-    float *kernel_data = (float *)malloc(kernel_size * sizeof(float));
-
-    //get data from the file and store it in memory
-    for (int i = 0; i < kernel_dim; i++) {
-        for (int j = 0; j < kernel_dim; j++) {
-            std::string value_str;
-            file2 >> value_str;
-            float value = std::stof(value_str);
-            kernel_data[i * kernel_dim + j] = value;
-        }
-    }
-
-    for (int i = 0; i < kernel_dim; i++) {
-        for (int j = 0; j < kernel_dim; j++) {
-            printf("%.4f    ", kernel_data[i * kernel_dim + j]);
-        }
-        printf("\n");
-    } 
-
 
     //allocate gpu memory
-    uint8_t *gpu_image_data, *gpu_result;
+    uint16_t *gpu_audio_data, *gpu_result;
     float *gpu_convol_kernel;
-    checkCudaErrors(cudaMalloc(&gpu_image_data, grayscale_size));
-    checkCudaErrors(cudaMalloc(&gpu_convol_kernel, kernel_size*sizeof(float)));
-    checkCudaErrors(cudaMalloc(&gpu_result, grayscale_size));
+    checkCudaErrors(cudaMalloc(&gpu_audio_data, num_samples*sizeof(uint16_t)es));
+    checkCudaErrors(cudaMalloc(&gpu_convol_kernel, BL*sizeof(float)));
+    checkCudaErrors(cudaMalloc(&gpu_result, num_samples*sizeof(uint16_t));
 
     //copy data to gpu memory
     checkCudaErrors(
         cudaMemcpy(
-            gpu_image_data, 
-            input_image_data, 
-            grayscale_size, 
+            gpu_audio_data, 
+            input_audio_data, 
+            num_samples*sizeof(uint16_t), 
             cudaMemcpyHostToDevice
         )
     );
@@ -80,8 +77,8 @@ int main() {
     checkCudaErrors(
         cudaMemcpy(
             gpu_convol_kernel, 
-            kernel_data, 
-            kernel_size, 
+            B, 
+            BL*sizeof(float), 
             cudaMemcpyHostToDevice
         )
     );
@@ -93,17 +90,16 @@ int main() {
     checkCudaErrors(cudaEventCreate(&start));
     checkCudaErrors(cudaEventCreate(&stop));
 
-/*
+
 // naive -------------------------------------------------------------------------------------------------
 
     //kernel launch parameters
-    dim3 threadsPerBlock(16, 16);
-    dim3 numBlocks((pixel_w + threadsPerBlock.x - 1) / threadsPerBlock.x, (pixel_h + threadsPerBlock.y - 1) / threadsPerBlock.y);
-
-    checkCudaErrors(cudaEventRecord(start));
+    int blockSize = 256;
+    int numBlocks = (num_samples + blockSize - 1) / blockSize;
 
     //launch the kernel
-    convolution_2D_kernel<<<numBlocks, threadsPerBlock>>>(gpu_result, gpu_image_data, gpu_convol_kernel, pixel_w, pixel_h, kernel_dim);
+    checkCudaErrors(cudaEventRecord(start));
+    convolution_1D_kernel<<<numBlocks, blockSize>>>(gpu_result, gpu_audio_data, gpu_convol_kernel, num_samples, BL);
 
     // get the time
     checkCudaErrors(cudaEventRecord(stop));
@@ -111,17 +107,21 @@ int main() {
     checkCudaErrors(cudaEventElapsedTime(&duration_ms, start, stop));
 
     //copy result back to host
-    checkCudaErrors(cudaMemcpy(output_image_data, gpu_result, grayscale_size * sizeof(uint8_t), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(output_audio_data, gpu_result, grayscale_size * sizeof(uint8_t), cudaMemcpyDeviceToHost));
 
-    writePGM("naive_image.pgm", output_image_data, pixel_w, pixel_h);
     printf("naive time: %.10fms\n", duration_ms);
-*/
+
+    //write the header to the output file
+    fwrite(&my_header, sizeof(my_header), 1, outfile);
+    //write the audio data
+    fwrite(output_audio_data, sizeof(uint16_t), num_samples, outfile);
 
     //free memory
-    free(input_image_data);
-    free(kernel_data);
-    free(output_image_data);
-    checkCudaErrors(cudaFree(gpu_image_data));
+    free(input_audio_data);
+    free(output_audio_data);
+    checkCudaErrors(cudaFree(gpu_audio_data));
     checkCudaErrors(cudaFree(gpu_convol_kernel));
     checkCudaErrors(cudaFree(gpu_result));
     return 0;
+
+}
