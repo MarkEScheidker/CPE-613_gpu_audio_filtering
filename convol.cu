@@ -23,7 +23,7 @@ struct header {
 };
 
 int main() {
-    infile_name = "input.wav";
+    infile_name = "white_noise.wav";
     outfile_name = "output.wav";
 
     infile = fopen(infile_name.c_str(), "r");   //open both files
