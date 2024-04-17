@@ -5,6 +5,21 @@
 #include <string>
 #include <stdlib.h>
 #include "B_48000.h"
+#include "helper_cuda.h"
+
+__global__ void convolution_1D_kernel(uint16_t *result, const uint16_t *audio_data, const float *conv_kernel, int data_size, int kernel_size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    float value = 0.0f;
+    int start = idx - kernel_size / 2;
+    for (int j = 0; j < kernel_size; ++j) {
+        if (start + j >= 0 && start + j < data_size) {
+            value += audio_data[start + j] * conv_kernel[j];
+        }
+    }
+    if (idx < data_size) {
+        result[idx] = (uint16_t)round(value);
+    }
+}
 
 struct header {
     unsigned int ChunkID;
@@ -23,46 +38,43 @@ struct header {
 };
 
 int main() {
-    infile_name = "white_noise.wav";
-    outfile_name = "output.wav";
+    std::string infile_name = "white_noise.wav";
+    std::string outfile_name = "output.wav";
 
-    infile = fopen(infile_name.c_str(), "r");   //open both files
-    outfile = fopen(outfile_name.c_str(), "w+");
-    
+    //open both files
+    std::ifstream infile(infile_name, std::ios::binary);
+    std::ofstream outfile(outfile_name, std::ios::binary);
+
     //quit if files cannot be opened
-    if (infile == NULL) {
-      cout << "Error: Could not open input file." << endl;
+    if (!infile) {
+      std::cout << "Error: Could not open input file." << std::endl;
       return 1;
     }
-    if (outfile == NULL) {
-      cout << "Error: Could not open output file." << endl;
+    if (!outfile) {
+      std::cout << "Error: Could not open output file." << std::endl;
       return 1;
     }
 
     //create header struct and fill with data from input file, checking for supported sample rate before continuing
-    struct header my_header;
-    fread(&my_header, sizeof(my_header),1, infile);
+    header my_header;
+    infile.read(reinterpret_cast<char*>(&my_header), sizeof(header));
 
     //get number of samples
-    num_samples = my_header.Subchunk2Size/2;
+    int num_samples = my_header.Subchunk2Size/2;
 
     //allocate the area required to store the data
-    uint16_t *input_audio_data = (uint16_t *)malloc(num_samples*sizeof(uint16_t));
-    //uint16_t *output_audio_data = (uint16_t *)malloc();
+    uint16_t* input_audio_data = (uint16_t*) malloc(num_samples * sizeof(uint16_t));
+    uint16_t *output_audio_data = (uint16_t *)malloc(num_samples * sizeof(uint16_t));
 
     //get data from the file and store it in memory
-    uint16_t audio_sample;
-    for (int i = 0; i < num_samples; i++) {
-            fread(&audio_sample, sizeof(audio_sample), 1, infile);
-            input_audio_data[i] = audio_sample;
-    }
+    infile.read(reinterpret_cast<char*>(input_audio_data), num_samples * sizeof(uint16_t));
 
     //allocate gpu memory
     uint16_t *gpu_audio_data, *gpu_result;
     float *gpu_convol_kernel;
-    checkCudaErrors(cudaMalloc(&gpu_audio_data, num_samples*sizeof(uint16_t)es));
+    checkCudaErrors(cudaMalloc(&gpu_audio_data, num_samples*sizeof(uint16_t)));
     checkCudaErrors(cudaMalloc(&gpu_convol_kernel, BL*sizeof(float)));
-    checkCudaErrors(cudaMalloc(&gpu_result, num_samples*sizeof(uint16_t));
+    checkCudaErrors(cudaMalloc(&gpu_result, num_samples*sizeof(uint16_t)));
 
     //copy data to gpu memory
     checkCudaErrors(
@@ -107,14 +119,14 @@ int main() {
     checkCudaErrors(cudaEventElapsedTime(&duration_ms, start, stop));
 
     //copy result back to host
-    checkCudaErrors(cudaMemcpy(output_audio_data, gpu_result, grayscale_size * sizeof(uint8_t), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(output_audio_data, gpu_result, num_samples * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 
     printf("naive time: %.10fms\n", duration_ms);
 
     //write the header to the output file
-    fwrite(&my_header, sizeof(my_header), 1, outfile);
+    outfile.write(reinterpret_cast<const char*>(&my_header), sizeof(header));
     //write the audio data
-    fwrite(output_audio_data, sizeof(uint16_t), num_samples, outfile);
+    outfile.write(reinterpret_cast<const char*>(output_audio_data), num_samples * sizeof(uint16_t));
 
     //free memory
     free(input_audio_data);
@@ -122,6 +134,8 @@ int main() {
     checkCudaErrors(cudaFree(gpu_audio_data));
     checkCudaErrors(cudaFree(gpu_convol_kernel));
     checkCudaErrors(cudaFree(gpu_result));
+    infile.close();
+    outfile.close();
     return 0;
 
 }
