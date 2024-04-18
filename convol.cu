@@ -7,28 +7,27 @@
 #include "fdacoefs.h"
 #include "helper_cuda.h"
 
-__global__ void convolution_1D_kernel(int16_t *result, const int16_t *audio_data, const float *conv_kernel, int data_size, int kernel_size) {
+__constant__ float const_conv_kernel[BL];
+
+__global__ void convolution_1D_kernel(int16_t *result, const int16_t *audio_data, int data_size, int kernel_size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     float value = 0.0f;
     int start = idx - kernel_size / 2;
 
     for (int j = 0; j < kernel_size; ++j) {
-        if (start + j >= 0 && start + j < data_size) {
-            //normalize audio data to the range of -1.0 to 1.0
-            float sample = static_cast<float>(audio_data[start + j]) / 32768.0f;
-            value += sample * conv_kernel[j];
+        int index = start + j;
+        if (index >= 0 && index < data_size) {
+            float sample = static_cast<float>(audio_data[index]) / 32768.0f;
+            value += sample * const_conv_kernel[j];
         }
     }
 
-    //scale the output back to the 16-bit signed integer range
     if (idx < data_size) {
         value = value * 32768.0f;
         value = fmaxf(-32768.0f, fminf(32767.0f, roundf(value)));
         result[idx] = static_cast<int16_t>(value);
     }
 }
-
-
 
 struct header {
     unsigned int ChunkID;
@@ -103,6 +102,9 @@ int main() {
             cudaMemcpyHostToDevice
         )
     );
+
+    // copy filter to global memory
+    cudaMemcpyToSymbol(const_conv_kernel, B, BL * sizeof(float));
     
     float duration_ms = 0.0f;
     cudaEvent_t start, stop;
@@ -120,7 +122,9 @@ int main() {
 
     //launch the kernel
     checkCudaErrors(cudaEventRecord(start));
-    convolution_1D_kernel<<<numBlocks, blockSize>>>(gpu_result, gpu_audio_data, gpu_convol_kernel, num_samples, BL);
+    // Kernel launch
+    convolution_1D_kernel<<<numBlocks, blockSize>>>(gpu_result, gpu_audio_data, num_samples, BL);
+
 
     // get the time
     checkCudaErrors(cudaEventRecord(stop));
