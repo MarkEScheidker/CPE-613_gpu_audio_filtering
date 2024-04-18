@@ -4,20 +4,27 @@
 #include <math.h>
 #include <string>
 #include <stdlib.h>
-#include "B_48000.h"
+#include "fdacoefs.h"
 #include "helper_cuda.h"
 
 __global__ void convolution_1D_kernel(uint16_t *result, const uint16_t *audio_data, const float *conv_kernel, int data_size, int kernel_size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     float value = 0.0f;
     int start = idx - kernel_size / 2;
+
     for (int j = 0; j < kernel_size; ++j) {
         if (start + j >= 0 && start + j < data_size) {
-            value += audio_data[start + j] * conv_kernel[j];
+            float sample = static_cast<float>(audio_data[start + j]) - 32768.0f;
+            sample /= 32768.0f; //scale to -1.0 to 1.0
+            value += sample * conv_kernel[j];
         }
     }
+
+    //convert result back to uint16_t
     if (idx < data_size) {
-        result[idx] = (uint16_t)round(value);
+        value *= 32768.0f; //scale back to 16-bit range
+        value += 32768.0f;
+        result[idx] = static_cast<uint16_t>(fmaxf(0.0f, fminf(65535.0f, roundf(value))));
     }
 }
 
@@ -38,7 +45,7 @@ struct header {
 };
 
 int main() {
-    std::string infile_name = "white_noise.wav";
+    std::string infile_name = "input.wav";
     std::string outfile_name = "output.wav";
 
     //open both files
