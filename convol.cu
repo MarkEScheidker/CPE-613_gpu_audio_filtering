@@ -6,27 +6,7 @@
 #include <stdlib.h>
 #include "fdacoefs.h"
 #include "helper_cuda.h"
-
-__global__ void convolution_1D_kernel(int16_t *result, const int16_t *audio_data, const float *conv_kernel, int data_size, int kernel_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    float value = 0.0f;
-    int start = idx - kernel_size / 2;
-
-    for (int j = 0; j < kernel_size; ++j) {
-        if (start + j >= 0 && start + j < data_size) {
-            //normalize audio data to the range of -1.0 to 1.0
-            float sample = static_cast<float>(audio_data[start + j]) / 32768.0f;
-            value += sample * conv_kernel[j];
-        }
-    }
-
-    //scale the output back to the 16-bit signed integer range
-    if (idx < data_size) {
-        value = value * 32768.0f;
-        value = fmaxf(-32768.0f, fminf(32767.0f, roundf(value)));
-        result[idx] = static_cast<int16_t>(value);
-    }
-}
+#include <cufft.h>
 
 
 
@@ -78,12 +58,14 @@ int main() {
     //get data from the file and store it in memory
     infile.read(reinterpret_cast<char*>(input_audio_data), num_samples * sizeof(int16_t));
 
-    //allocate gpu memory
+    //allocate gpu resources
     int16_t *gpu_audio_data, *gpu_result;
-    float *gpu_convol_kernel;
+    cufftHandle plan_fwd, plan_inv;
+    cufftComplex *gpu_freq_data;
     checkCudaErrors(cudaMalloc(&gpu_audio_data, num_samples*sizeof(int16_t)));
-    checkCudaErrors(cudaMalloc(&gpu_convol_kernel, BL*sizeof(float)));
     checkCudaErrors(cudaMalloc(&gpu_result, num_samples*sizeof(int16_t)));
+    checkCudaErrors(cudaMalloc(&gpu_freq_data, sizeof(cufftComplex) * (num_samples/2 + 1)));
+    
 
     //copy data to gpu memory
     checkCudaErrors(
@@ -95,14 +77,12 @@ int main() {
         )
     );
 
-    checkCudaErrors(
-        cudaMemcpy(
-            gpu_convol_kernel, 
-            B, 
-            BL*sizeof(float), 
-            cudaMemcpyHostToDevice
-        )
-    );
+    //setup fft on gpu
+    checkCudaErrors(cufftPlan1d(&plan_fwd, num_samples, CUFFT_R2C, 1));
+    checkCudaErrors(cufftPlan1d(&plan_inv, num_samples, CUFFT_C2R, 1));
+
+    //execute fft
+    checkCudaErrors(cufftExecR2C(plan_fwd, (cufftReal *)gpu_audio_data, gpu_freq_data));
     
     float duration_ms = 0.0f;
     cudaEvent_t start, stop;
@@ -111,8 +91,6 @@ int main() {
     checkCudaErrors(cudaEventCreate(&start));
     checkCudaErrors(cudaEventCreate(&stop));
 
-
-// naive -------------------------------------------------------------------------------------------------
 
     //kernel launch parameters
     int blockSize = 256;
