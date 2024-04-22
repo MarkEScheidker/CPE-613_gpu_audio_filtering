@@ -4,5 +4,5 @@
 #SBATCH --cpus-per-task 1
 #SBATCH --mem-per-cpu 1000mb
 #SBATCH --ntasks 1
-nvcc -o main convol.cu
+nvcc -o main fft_filter.cu -lcufft
 ./main
