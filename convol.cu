@@ -9,46 +9,33 @@
 
 __constant__ float const_conv_kernel[BL];
 
-__global__ void convolution_1D_tiled_kernel(int16_t *result, const int16_t *audio_data, int data_size, int kernel_size) {
-    extern __shared__ int16_t shared_audio[];
+#define TILE_WIDTH 256 
 
-    int halo_width = kernel_size / 2;
-    int idx_global = blockIdx.x * blockDim.x + threadIdx.x;
-    int idx_shared = threadIdx.x + halo_width;
+__global__ void tiled_convolution_1D_kernel(int16_t *result, const int16_t *audio_data, int data_size, int kernel_size) {
+    extern __shared__ int16_t s_data[];
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int radius = kernel_size / 2;
+    int loadIdx = tid - radius;
 
-    if (idx_global < data_size) {
-        shared_audio[idx_shared] = audio_data[idx_global];
+    if (loadIdx >= 0 && loadIdx < data_size) {
+        s_data[threadIdx.x] = audio_data[loadIdx];
     } else {
-        shared_audio[idx_shared] = 0; 
+        s_data[threadIdx.x] = 0;
     }
+    __syncthreads(); 
 
-    if (threadIdx.x < halo_width) {
-
-        int left_idx = idx_global - halo_width;
-        if (left_idx >= 0) {
-            shared_audio[threadIdx.x] = audio_data[left_idx];
-        } else {
-            shared_audio[threadIdx.x] = 0;
-        }
-
-        int right_idx = idx_global + blockDim.x;
-        if (right_idx < data_size) {
-            shared_audio[threadIdx.x + blockDim.x + halo_width] = audio_data[right_idx];
-        } else {
-            shared_audio[threadIdx.x + blockDim.x + halo_width] = 0;
-        }
-    }
-    __syncthreads();
-
-    if (idx_global < data_size) {
-        float value = 0.0f;
-        for (int j = -halo_width; j <= halo_width; ++j) {
-            value += shared_audio[idx_shared + j] * const_conv_kernel[halo_width + j];
+    float value = 0.0f;
+    if (tid < data_size) {
+        for (int j = -radius; j <= radius; j++) {
+            int sharedIdx = threadIdx.x + j + radius;
+            if (sharedIdx >= 0 && sharedIdx < blockDim.x + kernel_size - 1) {
+                value += (s_data[sharedIdx] / 32768.0f) * const_conv_kernel[radius + j];
+            }
         }
 
         value = value * 32768.0f;
         value = fmaxf(-32768.0f, fminf(32767.0f, roundf(value)));
-        result[idx_global] = static_cast<int16_t>(value);
+        result[tid] = static_cast<int16_t>(value);
     }
 }
 
@@ -138,15 +125,16 @@ int main() {
     checkCudaErrors(cudaEventCreate(&stop));
 
     //kernel launch parameters
-    int blockSize = 256;
+    int blockSize = TILE_WIDTH;
     int numBlocks = (num_samples + blockSize - 1) / blockSize;
     int halo_width = BL / 2;
-    int sharedMemSize = (blockSize + 2 * halo_width) * sizeof(int16_t);
+    size_t sharedMemSize = (blockSize + 2 * halo_width) * sizeof(int16_t);
 
     //launch the kernel
     checkCudaErrors(cudaEventRecord(start));
+
     // Kernel launch
-    convolution_1D_tiled_kernel<<<numBlocks, blockSize, sharedMemSize>>>(gpu_result, gpu_audio_data, num_samples, BL);
+    tiled_convolution_1D_kernel<<<numBlocks, blockSize, sharedMemSize>>>(gpu_result, gpu_audio_data, num_samples, BL);
 
     // get the time
     checkCudaErrors(cudaEventRecord(stop));
