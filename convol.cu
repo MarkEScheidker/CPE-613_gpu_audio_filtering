@@ -6,36 +6,41 @@
 #include <stdlib.h>
 #include "fdacoefs.h"
 #include "helper_cuda.h"
+#include <stdio.h>
+#include <cuda_runtime.h>
 
 __constant__ float const_conv_kernel[BL];
 
-#define TILE_WIDTH 256 
-
 __global__ void tiled_convolution_1D_kernel(int16_t *result, const int16_t *audio_data, int data_size, int kernel_size) {
-    extern __shared__ int16_t s_data[];
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int radius = kernel_size / 2;
-    int loadIdx = tid - radius;
+    extern __shared__ int16_t shared_data[];
 
-    if (loadIdx >= 0 && loadIdx < data_size) {
-        s_data[threadIdx.x] = audio_data[loadIdx];
-    } else {
-        s_data[threadIdx.x] = 0;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int t_idx = threadIdx.x;
+    int half_kernel = kernel_size / 2;
+
+    if (t_idx < half_kernel) {
+        int left_index = idx - half_kernel;
+        shared_data[t_idx] = (left_index < 0) ? 0 : audio_data[left_index];
     }
-    __syncthreads(); 
+
+    shared_data[t_idx + half_kernel] = (idx < data_size) ? audio_data[idx] : 0;
+
+    if (t_idx < half_kernel) {
+        int right_index = idx + blockDim.x;
+        shared_data[t_idx + blockDim.x + half_kernel] = (right_index >= data_size) ? 0 : audio_data[right_index];
+    }
+    __syncthreads();
 
     float value = 0.0f;
-    if (tid < data_size) {
-        for (int j = -radius; j <= radius; j++) {
-            int sharedIdx = threadIdx.x + j + radius;
-            if (sharedIdx >= 0 && sharedIdx < blockDim.x + kernel_size - 1) {
-                value += (s_data[sharedIdx] / 32768.0f) * const_conv_kernel[radius + j];
-            }
-        }
+    for (int j = 0; j < kernel_size; ++j) {
+        int shared_index = t_idx + j;
+        value += (shared_data[shared_index] / 32768.0f) * const_conv_kernel[j];
+    }
 
+    if (idx < data_size) {
         value = value * 32768.0f;
         value = fmaxf(-32768.0f, fminf(32767.0f, roundf(value)));
-        result[tid] = static_cast<int16_t>(value);
+        result[idx] = static_cast<int16_t>(value);
     }
 }
 
@@ -125,16 +130,16 @@ int main() {
     checkCudaErrors(cudaEventCreate(&stop));
 
     //kernel launch parameters
-    int blockSize = TILE_WIDTH;
+    int kernel_size = BL;
+    int blockSize = 256;
     int numBlocks = (num_samples + blockSize - 1) / blockSize;
-    int halo_width = BL / 2;
-    size_t sharedMemSize = (blockSize + 2 * halo_width) * sizeof(int16_t);
+    int sharedMemSize = (blockSize + 2 * (kernel_size / 2)) * sizeof(int16_t);
 
     //launch the kernel
     checkCudaErrors(cudaEventRecord(start));
 
     // Kernel launch
-    tiled_convolution_1D_kernel<<<numBlocks, blockSize, sharedMemSize>>>(gpu_result, gpu_audio_data, num_samples, BL);
+    tiled_convolution_1D_kernel<<<numBlocks, blockSize, sharedMemSize>>>(gpu_result, gpu_audio_data, num_samples, kernel_size);
 
     // get the time
     checkCudaErrors(cudaEventRecord(stop));
