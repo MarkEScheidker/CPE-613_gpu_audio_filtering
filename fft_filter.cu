@@ -146,7 +146,7 @@ int main() {
     //convert back to int16
     for (int i = 0; i < num_samples; i++) {
         output_audio_data[i] /= N; // Normalize
-        input_audio_data[i] = static_cast<int16_t>(output_audio_data[i]);
+        input_audio_data[i] = static_cast<int16_t>(output_audio_data[i]*2048.0);
     }
 
     //write the header to the output file
